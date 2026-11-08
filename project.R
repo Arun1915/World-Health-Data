@@ -62,6 +62,7 @@ clean_data <- raw_data %>%
   ) %>%
   # Step D: Remove any trailing empty rows grabbed by the CSS selector
   filter(Countries != "" & !is.na(Countries))
-  
+#RDS file for shiny use 
+saveRDS(clean_data, "who_health_data.rds")
 clean_data
 View(clean_data)
