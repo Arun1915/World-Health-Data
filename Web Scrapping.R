@@ -24,45 +24,59 @@ Den_Doctor      <- html_text(html_elements(webpage,"#whs-annex-SDG3-COUNTRY .k-t
 Den_nursing     <- html_text(html_elements(webpage,"#whs-annex-SDG3-COUNTRY .k-text-right:nth-child(30)"), trim = TRUE)
 Domestic        <- html_text(html_elements(webpage,"#whs-annex-SDG_GPW-COUNTRY .k-text-right:nth-child(1)"), trim = TRUE)
 
+library(rvest)
+library(httr)
+library(dplyr)
+library(stringr)
+library(ggplot2) # Added for statistical analysis and visualization
+
 # 1. Assemble the raw data frame
-# Standardized column naming to remove spaces (better for downstream Shiny/ggplot calls)
+# Do NOT use as.numeric() here. The previous code forced characters into numeric 
+# before cleaning them, which caused strings with spaces or "<" to immediately become NA.
 raw_data <- data.frame(
-  Countries                 = countries,
-  Under_five_mortality_rate = mortality_rate,
-  Neonatal_mortality_rate   = Neonatal_rate,
-  New_HIV_infections        = HIV,
-  Suicide_mortality_rate    = Suicide,
-  Total_alcohol_per_capita  = Total_alcohol,
-  Road_traffic_mortality_rate = Road_traffic,
-  UHC_Service_coverage      = UHC,
-  Age_standardized_mortality_rate = Age_sta,
-  Diphtheria_tetanus_pertussis    = Dip,
-  Density_medical_doctors       = Den_Doctor,
-  Density_nursing            = Den_nursing,
-  Domestic_general_gov_health = Domestic,
+  Countries                         = countries,
+  `Under five mortality rate`       = mortality_rate,
+  `Neonatal mortality rate`         = Neonatal_rate,
+  `New HIV infections`              = HIV,
+  `Suicide mortality rate`          = Suicide,
+  `Total alcohol per capita`        = Total_alcohol,
+  `Road traffic mortality rate`     = Road_traffic,
+  `UHC Service coverage`            = UHC,
+  `Age standardized mortality rate` = Age_sta,
+  `Diphtheria tetanus pertussis`    = Dip,
+  `Density medical doctors`         = Den_Doctor,
+  `Density nursing`                 = Den_nursing,
+  `Domestic general gov health`     = Domestic,
+  check.names = FALSE,
   stringsAsFactors = FALSE
 )
 
 # 2. Clean the data for analysis
+# Alternative to NA for "<" symbols: In statistics, left-censored data (like "<1") 
+# is commonly imputed as half the limit of detection (0.5) or the boundary itself (1). 
+# This preserves the data points for your histograms without breaking numeric transformations.
 clean_data <- raw_data %>%
+  filter(Countries != "" & !is.na(Countries)) %>%
   mutate(
-    across(
-      -Countries,
-      ~ {
-        # 1. Remove all spaces (e.g., "1 000" becomes "1000")
-        val <- str_replace_all(.x, "\\s+", "")
-        
-        # 2. Extract numbers, decimals, AND any leading "<" or ">" symbols
-        val <- str_extract(val, "^[<>]?[0-9.]+")
-        
-        # 3. Return as character (Do NOT use as.numeric() here)
-        val
-      }
-    )
-  ) %>%
-  # Step D: Remove any trailing empty rows grabbed by the CSS selector
-  filter(Countries != "" & !is.na(Countries))
-#RDS file for shiny use 
-saveRDS(clean_data, "who_health_data.rds")
-clean_data
+    # Step A: Remove whitespace from all target columns
+    across(-Countries, ~ str_replace_all(.x, "\\s+", "")),
+    
+    # Step B: Extract ONLY the leading numbers, decimals, and < or > symbols.
+    # This automatically drops any confidence intervals like "[10.5-12.0]"
+    across(-Countries, ~ str_extract(.x, "^[<>]?[0-9.]+")),
+    
+    # Step C: Handle the left-censored "<" symbols explicitly
+    across(-Countries, ~ case_when(
+      .x == "<1" ~ "0.5",      
+      .x == "<0.1" ~ "0.05",   
+      TRUE ~ str_replace_all(.x, "[<>]", "") 
+    )),
+    
+    # Step D: Safely convert the isolated numbers to numeric
+    across(-Countries, ~ as.numeric(na_if(.x, "")))
+  )
 View(clean_data)
+
+
+saveRDS(clean_data, "who_health_data.rds")
+write.csv(clean_data, "who data")
