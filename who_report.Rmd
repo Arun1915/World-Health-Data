@@ -1,0 +1,288 @@
+---
+title: 'WHO Data Explorer: Full Report'
+author: "Arun , Arpit , Avinash , Uttkarsh , Vikash"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(ggplot2)
+library(patchwork)   # puts two plots side by side
+library(dplyr)
+library(tidyr)
+library(psych)       # describe() for summary statistics
+library(knitr)       # kable() for tables
+library(tidyverse)
+
+who_data   <- readRDS("who_data.rds")
+indicators <- setdiff(names(who_data), "Countries")
+
+# Percentile
+percentile <- function(x) (rank(x, ties.method = "min", na.last = "keep") - 1) / (sum(!is.na(x)) - 1) * 100
+pct <- who_data
+pct[indicators] <- lapply(who_data[indicators], percentile)
+```
+
+# Introduction
+
+The objective of this project is to use develop an RShiny application with tools for data analysis of a WHO dataset on world healthcare expenditure, infrastructure, and health outcomes across different countries. By examining parameters such as mortality rates, healthcare investment, and the availability of medical professionals, the study aims to identify disparities, understand distribution patterns, highlight exceptions, and draw meaningful insights that can support future healthcare planning and resource allocation.
+
+## The data
+
+The dataset is scraped from the **World Health Organization (WHO) Global Health Observatory — World Health Statistics Statistical Annex** (<https://www.who.int/data/gho/whs-annex/>), specifically from the **SDG 3 (`whs-annex-SDG3-COUNTRY`)** and **GPW (`whs-annex-SDG_GPW-COUNTRY`)** country-level tables.
+
+The dataset contains **`r nrow(who_data)` countries** and **`r length(indicators)` health indicators**. Because the annex compiles the latest available estimates for each metric, the reporting year varies across indicators:
+
+* **2023:** Under five mortality rate, Neonatal mortality rate, New HIV infections, Diphtheria tetanus pertussis, Density medical doctors, and Density nursing.
+* **2022:** Total alcohol per capita and Domestic general gov health.
+* **2021:** Suicide mortality rate, Road traffic mortality rate, UHC Service coverage, and Age standardized mortality rate..
+
+Some countries have no reported value for certain indicators, so the number of countries with available data differs from one indicator to the next.
+
+```{r overview}
+overview <- data.frame(
+  Indicator = indicators,
+  `Countries with data` = unname(sapply(who_data[indicators], function(x) sum(!is.na(x)))),
+  Minimum = unname(sapply(who_data[indicators], min,    na.rm = TRUE)),
+  Median  = unname(sapply(who_data[indicators], median, na.rm = TRUE)),
+  Maximum = unname(sapply(who_data[indicators], max,    na.rm = TRUE)),
+  check.names = FALSE
+)
+kable(overview, digits = 2, caption = "The 12 indicators in the data set")
+```
+
+# Tab 1: Country Profile
+
+The application allows users to select a country and optionally compare it with a second country. A table displays the values of all healthcare indicators for the selected country or countries. A radar chart illustrates the percentile ranking of each country across all indicators, showing its relative position among countries worldwide, while a paginated table provides access to the complete dataset for all countries
+
+Example: India and Japan
+
+```{r tab1-table}
+sel <- c("India", "Japan")     # change these names to see other countries
+
+df <- data.frame(Indicator = indicators)
+for (cn in sel) df[[cn]] <- unlist(who_data[who_data$Countries == cn, indicators], use.names = FALSE)
+kable(df, digits = 2, caption = paste("Indicator values:", paste(sel, collapse = " and ")))
+```
+
+```{r tab1-radar, fig.width=8, fig.height=7}
+d <- do.call(rbind, lapply(sel, function(cn)
+  data.frame(Country    = cn,
+             Indicator  = factor(indicators, levels = indicators),
+             Percentile = unlist(pct[pct$Countries == cn, indicators], use.names = FALSE))))
+pal <- setNames(c("#009ADE", "#F26B3A")[seq_along(sel)], sel)
+
+ggplot(d, aes(Indicator, Percentile, group = Country, colour = Country, fill = Country)) +
+  geom_polygon(alpha = 0.2, linewidth = 1) +
+  geom_point(size = 2) +
+  coord_polar() +
+  scale_y_continuous(limits = c(0, 100)) +
+  scale_x_discrete(labels = scales::label_wrap(14)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  labs(title = "Percentile profile", x = NULL, y = "Percentile (0-100)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", axis.text.x = element_text(size = 8))
+```
+
+```{r tab1-text, results='asis'}
+for (cn in sel) {
+  p <- unlist(pct[pct$Countries == cn, indicators])
+  p <- sort(p[!is.na(p)], decreasing = TRUE)
+  cat("- **", cn, "**: highest percentiles in ", paste(names(head(p, 3)), collapse = ", "),
+      "; lowest percentiles in ", paste(names(tail(p, 3)), collapse = ", "), ".\n", sep = "")
+}
+```
+
+A high percentile means a **high value**, not necessarily a better outcome. For example, a high percentile for a mortality rate is a bad sign, while a high percentile for service coverage is a good sign.
+
+# Tab 2: Government expenditure, Medical Staff, and Health Indicators
+
+This tab allows the user to plot a scatter plot between any two columns of our dataset and fit a polynomial on the data.
+
+For our study, we plot 4 columns against UHC Service Coverage-
+
+A.  Under 5 Mortality Rate
+B.  Suicide Mortality Rate
+C.  Diphtheria Tetanus Pertussis
+D.  Density Medical Doctors
+
+```{r t2_plots, echo = FALSE}
+t2_p1 <- ggplot(who_data%>%filter(!is.na(`Under five mortality rate`) & !is.na(`UHC Service coverage`)), aes(`UHC Service coverage`, `Under five mortality rate`)) + geom_point() + scale_x_continuous(n.breaks = 5) + scale_y_continuous(n.breaks = 5) + labs(title = "Plot A")
+t2_p2 <- ggplot(who_data%>%filter(!is.na(`Suicide mortality rate`) & !is.na(`UHC Service coverage`)), aes(`UHC Service coverage`, `Suicide mortality rate`)) + geom_point() + scale_x_continuous(n.breaks = 5) + scale_y_continuous(n.breaks = 5) + labs(title = "Plot B")
+t2_p3 <- ggplot(who_data%>%filter(!is.na(`Diphtheria tetanus pertussis`) & !is.na(`UHC Service coverage`)), aes(`UHC Service coverage`, `Diphtheria tetanus pertussis`)) + geom_point() + scale_x_continuous(n.breaks = 5) + scale_y_continuous(n.breaks = 5) + labs(title = "Plot C")
+t2_p4 <- ggplot(who_data%>%filter(!is.na(`Density medical doctors`) & !is.na(`UHC Service coverage`)), aes(`UHC Service coverage`, `Density medical doctors`)) + geom_point() + scale_x_continuous(n.breaks = 5) + scale_y_continuous(n.breaks = 5) + labs(title = "Plot D")
+
+(t2_p1+t2_p2)/(t2_p3+t2_p4)
+```
+
+The following correlations are calculated
+
+```{r t2_corr, echo = FALSE}
+t2_vec <- numeric(length = 4)
+t2_df_temp <-who_data%>%filter(!is.na(`Under five mortality rate`) & !is.na(`UHC Service coverage`))
+t2_vec[1] <- cor(t2_df_temp$`Under five mortality rate`, t2_df_temp$`UHC Service coverage`)
+t2_df_temp <-who_data%>%filter(!is.na(`Suicide mortality rate`) & !is.na(`UHC Service coverage`))
+t2_vec[2] <- cor(t2_df_temp$`Suicide mortality rate`, t2_df_temp$`UHC Service coverage`)
+t2_df_temp <-who_data%>%filter(!is.na(`Diphtheria tetanus pertussis`) & !is.na(`UHC Service coverage`))
+t2_vec[3] <- cor(t2_df_temp$`Diphtheria tetanus pertussis`, t2_df_temp$`UHC Service coverage`)
+t2_df_temp <-who_data%>%filter(!is.na(`Density medical doctors`) & !is.na(`UHC Service coverage`))
+t2_vec[4] <- cor(t2_df_temp$`Density medical doctors`, t2_df_temp$`UHC Service coverage`)
+
+cat(" Plot A: ", t2_vec[1], "\n Plot B: ", t2_vec[2], "\n Plot C: ", t2_vec[3], "\n Plot D: ", t2_vec[4])
+```
+
+UHC Service Coverage indicates the government (or society's) expenditure on basic medical facilities. Higher it's value, the better we expect vaccination coverage, higher medical staff density and lower mortality rate. These graphs (representative of broader categories) show the expected trend.
+
+In physically clearly measurable things, the correlations are stronger and of the obvious sign bar a few exceptions. However, in fields where medical science doesn't have a clear approach to solve, or measure, such as suicide mortality, we see a weak correlation (Plot B).
+
+
+# Tab 3: Column Distribution
+
+This tab explores the univariate distribution of selected health metrics from the World Health Organization dataset. Understanding the distribution of individual variables is critical for identifying skewness, central tendencies, and potential outliers before conducting correlation or comparative analyses.
+
+For this report, we are evaluating the distribution of **Neonatal mortality rate**.
+
+```{r tab3-data}
+col3 <- "Neonatal mortality rate"
+
+df3 <- who_data[!is.na(who_data[[col3]]), c("Countries", col3)]
+names(df3)[2] <- "X"
+```
+
+```{r tab3-plots, fig.width=10, fig.height=4}
+p1 <- ggplot(df3, aes(x = X)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "lightblue", color = "white") +
+  geom_density(color = "red", linewidth = 1.5) +
+  labs(x = col3, y = "Density") +
+  theme_minimal()
+
+p2 <- ggplot(df3, aes(x = "", y = X)) +
+  geom_boxplot(fill = "lightblue") +
+  coord_flip() +
+  labs(x = "", y = col3) +
+  theme_minimal()
+
+p1 + p2
+```
+
+```{r tab3-stats}
+s <- psych::describe(df3$X)
+kable(s, digits = 2, caption = paste("Summary statistics:", col3))
+```
+
+```{r tab3-outliers}
+out <- boxplot.stats(df3$X)$out
+```
+
+This exploratory analysis provides a clear, quantitative baseline for understanding the selected WHO health metric. By evaluating both the visual distribution and the descriptive statistics of the Neonatal mortality rate, we observe a right-skewed distribution, indicated by a mean (11.48) that is notably higher than the median (8.40) and a positive skewness value (0.92).
+
+# Tab 4: Country Comparison
+
+This bar plot provides a straightforward visual comparison of the dataset:
+
+* **X-axis:** Displays the selected countries.
+* **Y-axis:** Displays the frequency or value of the selected columns.
+
+The Association of Southeast Asian Nations (ASEAN) is a regional intergovernmental organization comprising ten member states (excluding Timor Leste, as it is a recent addition). This analysis compares the performance of all ASEAN countries across five selected WHO health and development Metrics.
+```{r tab4-data}
+target_countries <- c(
+  "India", "Brunei Darussalam", "Cambodia", "Indonesia",
+  "Lao People's Democratic Republic", "Malaysia", "Myanmar",
+  "Philippines", "Singapore", "Thailand", "Viet Nam"
+)
+target_metrics <- indicators[1:5]
+
+df_analysis <- who_data %>%
+  filter(Countries %in% target_countries) %>%
+  select(Countries, all_of(target_metrics)) %>%
+  pivot_longer(cols = -Countries, names_to = "Metric", values_to = "Value")
+```
+
+```{r tab4-plot, fig.width=10, fig.height=8}
+ggplot(df_analysis, aes(x = Countries, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "WHO health metrics: India and ASEAN member states",
+       x = "Country", y = "Metric value", fill = "Health indicator")
+```
+
+Moving beyond visual inspection, the analysis below highlights the exact countries with the maximum and minimum values for each selected metric.
+
+```{r tab4-minmax}
+min_max_summary <- df_analysis %>%
+  group_by(Metric) %>%
+  summarise(
+    `Highest Country` = Countries[which.max(Value)],
+    `Highest Value`   = round(max(Value, na.rm = TRUE), 2),
+    `Lowest Country`  = Countries[which.min(Value)],
+    `Lowest Value`    = round(min(Value, na.rm = TRUE), 2)
+  ) %>%
+  arrange(Metric)
+
+kable(min_max_summary, caption = "Highest and lowest values in India and ASEAN")
+```
+
+```{r tab4-text}
+mm <- min_max_summary[min_max_summary$Metric == "Under five mortality rate", ]
+```
+
+# Correlation Heat Map
+
+
+```{r corr_map}
+# Select all numeric indicator columns (excluding row indices and country names)
+df_numeric <- who_data %>% select(-where(is.character))
+
+# Calculate Pearson correlation matrix using pairwise complete observations
+cor_matrix <- cor(df_numeric, use = "pairwise.complete.obs")
+# Convert the correlation matrix into long format for ggplot2
+cor_long <- as.data.frame(cor_matrix) %>%
+  rownames_to_column(var = "Var1") %>%
+  pivot_longer(
+    cols = -Var1,
+    names_to = "Var2",
+    values_to = "Correlation"
+  )
+  
+ggplot(cor_long, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(aes(label = round(Correlation, 2)), color = "black", size = 2.8) +
+  scale_fill_gradient2(
+    low = "#4575b4",
+    mid = "#ffffbf",
+    high = "#d73027",
+    midpoint = 0,
+    limit = c(-1, 1),
+    name = "Pearson\nCorrelation"
+  ) +
+  coord_fixed() +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  ) +
+  labs(
+    title = "Correlation Heatmap of WHO Global Health Indicators",
+    x = "",
+    y = ""
+  )
+
+```
+
+The objective of this analysis is to study the relationships between different global health indicators using Pearson's correlation coefficient
+
+# Conclusion
+
+The dataset can be explored further using this app. We have demonstrated some basic analysis across the four tabs, showing how to look at single countries, relationships between indicators, variable distributions, and country comparisons. Overall, the app gives a simple way to explore and compare global health data interactively.
